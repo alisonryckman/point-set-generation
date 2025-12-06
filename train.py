@@ -1,8 +1,16 @@
 import numpy as np
 import torch
 from torch import nn
-import torch.nn.functional as functional
-import open3d
+import torch.nn.functional as F
+import torch.optim as optim
+import torchvision.transforms as transforms
+from torch.utils.data import DataLoader
+import open3d as o3d
+from PIL import Image
+import cv2
+
+from batch_creator import PointCloudImageDataset
+from distance import ChamferLoss
 
 class PCGen(nn.Module):
     def __init__(self):
@@ -29,42 +37,124 @@ class PCGen(nn.Module):
         self.conv128 = nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, padding=1)
 
         # input 128 1 x 24 x 32 feature maps
-        self.stridedconv256 = nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, stride=2, padding=1)
+        self.stridedconv256 = nn.Conv2d(in_channels=128, out_channels=256, kernel_size=5, stride=2, padding=1)
         # input 256 1 x 12 x 16 feature maps
         self.conv256 = nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, padding=1)
 
         # input 256 1 x 12 x 16 feature maps
-        self.stridedconv512 = nn.Conv2d(in_channels=256, out_channels=512, kernel_size=3, stride=2, padding=1)
+        self.stridedconv512 = nn.Conv2d(in_channels=256, out_channels=512, kernel_size=5, stride=2, padding=1)
         # input 512 1 x 6 x 8 feature maps
         self.conv512 = nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, padding=1)
 
         # need to figure out that last conv layer
+        self.finalconv512 = nn.Conv2d(in_channels=512, out_channels=1024, kernel_size=5, stride=2, padding=1)
 
         # pred fc
         # input 512 1 x 6 x 8 feature 
-        self.predfc = nn.Linear(in_features=32, out_features=32)
+        # idk if this is right
+        self.predfc = nn.Linear(in_features=6, out_features=3)
 
-        layers = []
-        layers.append(self.inputconv16)
-        layers.append(nn.ReLU())
-        layers.append(self.conv16)
-        layers.append(nn.ReLU())
-        layers.append(self.stridedconv32)
-        layers.append(nn.ReLU())
-        layers.append(self.conv32)
-        layers.append(nn.ReLU())
-        layers.append(self.conv32)
-        layers.append(nn.ReLU())
+    def forward(self, input):
+        # model forward pass
+        c1 = F.relu(self.inputconv16(input))
+        c2 = F.relu(self.conv16(c1))
+        sc3 = F.relu(self.stridedconv32(c2))
+        c4 = F.relu(self.conv32(sc3))
+        c5 = F.relu(self.conv32(c4))
+        sc6 = F.relu(self.stridedconv64(c5))
+        c7 = F.relu(self.conv64(sc6))
+        c8 = F.relu(self.conv64(c7))
+        sc9 = F.relu(self.stridedconv128(c8))
+        c10 = F.relu(self.conv128(sc9))
+        c11 = F.relu(self.conv128(c10))
+        sc12 = F.relu(self.stridedconv256(c11))
+        c13 = F.relu(self.conv256(sc12))
+        c14 = F.relu(self.conv256(c13))
+        sc15 = F.relu(self.stridedconv512(c14))
+        c16 = F.relu(self.conv512(sc15))
+        c17 = F.relu(self.conv512(c16))
+        c18 = F.relu(self.conv512(c17))
+        sc19 = F.relu(self.finalconv512(c18))
+
+        flat = sc19.view(sc19.size(0), -1) 
+        output = F.relu(self.predfc(flat))
+
+        # layers = []
+        # layers.append(self.inputconv16)
+        # layers.append(nn.ReLU())
+        # layers.append(self.conv16)
+        # layers.append(nn.ReLU())
+        # layers.append(self.stridedconv32)
+        # layers.append(nn.ReLU())
+        # layers.append(self.conv32)
+        # layers.append(nn.ReLU())
+        # layers.append(self.conv32)
+        # layers.append(nn.ReLU())
 
         print("model gen success!")
-
-
-
+        return output
 
 if __name__ == "__main__":
     device = 'cpu'
-    if torch.accelerator.is_available():
-        device =torch.accelerator
+    if torch.cuda.is_available():
+        device = torch.cuda.get_device_name(0)
 
-    print(f"Using {device} device")
+    # print(f"Using {device} device")
     pcgen = PCGen()
+    print(pcgen)
+    params = list(pcgen.parameters())
+    print(len(params))
+    print(params[0].size())
+
+    # try input
+    pil_image = Image.open("img_data/anise/anise_001_000.png")
+    pil_image = pil_image.convert('RGB')
+    transform = transforms.ToTensor()
+    image_tensor = transform(pil_image)
+    print("shape:", image_tensor.shape)
+    print(image_tensor.dtype)
+    out = pcgen(image_tensor)
+    print(out)
+
+    # run training loop I guess
+    batch_size = 32
+    dataset = PointCloudImageDataset('img_data', 'pc_data', 'rotation_data', split='train')
+    loader = DataLoader(dataset, batch_size=32, shuffle=True, num_workers=16)
+    print("loader complete!")
+
+    num_batches = len(loader)
+    optimizer = optim.Adam(pcgen.parameters(), lr=0.001)
+    chamfer_loss = ChamferLoss()
+
+    for b in range(num_batches):
+        img, points = dataset[b]
+        points = torch.from_numpy(points)
+
+        # pcd = o3d.geometry.PointCloud()
+        # pcd.points = o3d.utility.Vector3dVector(transformed_points)
+        # img.save("test.png")
+        # o3d.visualization.draw_geometries([pcd])
+        optimizer.zero_grad()
+        img = torch.tensor(np.array(img) / 255.0, dtype=torch.float32).permute(2, 0, 1)
+        output = pcgen(img)
+        loss = chamfer_loss(output, points)
+        loss.backward()
+        optimizer.step()
+        print(f"finished iteration {b} of {num_batches}")
+
+    print("done training!")
+    # pcgen = PCGen()
+    # pcgen.load_state_dict(torch.load('model.pth', weights_only=True))
+
+    pcgen.eval()
+    with torch.no_grad():
+        input = Image.open("test.png").convert('RGB')
+        tensor_input = transforms.ToTensor()
+        tensor_input = tensor_input(input)
+        out_pc = pcgen(tensor_input)
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(out_pc.detach().numpy())
+        o3d.visualization.draw_geometries([pcd])
+
+    PATH = "model.pth"
+    torch.save(pcgen.state_dict(), PATH)

@@ -55,14 +55,19 @@ for n, item in enumerate(items):
     for _, dirnames, _ in os.walk(object_name):
         for dir in dirnames:
             subimage_path = os.path.join(object_top_level_path, dir)
+
+            json_file = os.path.join(subimage_path, "transforms.json")
+            if not os.path.isdir(os.path.join(os.getcwd(), "rotation_data", object_name)):
+                os.mkdir(os.path.join(os.getcwd(), "rotation_data", object_name))
+            shutil.copy(json_file, os.path.join(os.getcwd(), "rotation_data", object_name, dir + "_transforms.json"))
+
             # individual image files for a particular model render
             image_files = [img for img in os.listdir(subimage_path) if os.path.isfile(os.path.join(subimage_path, img)) and os.path.splitext(img)[1] != ".json"]
-            
             if not os.path.isdir(os.path.join(os.getcwd(), "img_data", object_name)):
                 os.mkdir(os.path.join(os.getcwd(), "img_data", object_name))
 
-            # for the first 5 images of each render, save them
-            for img in image_files[:min(5, len(image_files))]:
+            # for the first 15 images of each render, save them
+            for img in image_files[:min(15, len(image_files))]:
                 os.rename(os.path.join(subimage_path, img), os.path.join(os.getcwd(), "img_data", object_name, dir + "_" + img))
 
                 img_path = os.path.join(os.getcwd(), "img_data", object_name, dir + "_" + img)
