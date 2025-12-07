@@ -10,7 +10,7 @@ from PIL import Image
 import cv2
 
 from batch_creator import PointCloudImageDataset
-from distance import ChamferLoss
+from distance import ChamferLoss, repulsion_loss
 
 class PCGen(nn.Module):
     def __init__(self):
@@ -49,10 +49,34 @@ class PCGen(nn.Module):
         # need to figure out that last conv layer
         self.finalconv512 = nn.Conv2d(in_channels=512, out_channels=1024, kernel_size=5, stride=2, padding=1)
 
-        # pred fc
-        # input 512 1 x 6 x 8 feature 
-        # idk if this is right
-        self.predfc = nn.Linear(in_features=6, out_features=3)
+        # pred fc: we want to predict `num_points` points (each with 3 coords)
+        self.num_points = 1024
+
+        # compute flattened feature size by running a dummy input through the conv stack
+        with torch.no_grad():
+            dummy = torch.zeros(1, 3, 192, 256)
+            x = F.relu(self.inputconv16(dummy))
+            x = F.relu(self.conv16(x))
+            x = F.relu(self.stridedconv32(x))
+            x = F.relu(self.conv32(x))
+            x = F.relu(self.conv32(x))
+            x = F.relu(self.stridedconv64(x))
+            x = F.relu(self.conv64(x))
+            x = F.relu(self.conv64(x))
+            x = F.relu(self.stridedconv128(x))
+            x = F.relu(self.conv128(x))
+            x = F.relu(self.conv128(x))
+            x = F.relu(self.stridedconv256(x))
+            x = F.relu(self.conv256(x))
+            x = F.relu(self.conv256(x))
+            x = F.relu(self.stridedconv512(x))
+            x = F.relu(self.conv512(x))
+            x = F.relu(self.conv512(x))
+            x = F.relu(self.conv512(x))
+            x = F.relu(self.finalconv512(x))
+            flat_dim = x.view(1, -1).size(1)
+
+        self.predfc = nn.Linear(in_features=flat_dim, out_features=self.num_points * 3)
 
     def forward(self, input):
         # model forward pass
@@ -74,10 +98,13 @@ class PCGen(nn.Module):
         c16 = F.relu(self.conv512(sc15))
         c17 = F.relu(self.conv512(c16))
         c18 = F.relu(self.conv512(c17))
-        sc19 = F.relu(self.finalconv512(c18))
-
-        flat = sc19.view(sc19.size(0), -1) 
-        output = F.relu(self.predfc(flat))
+        sc19 = self.finalconv512(c18)
+        if (sc19.ndim == 3):
+            sc19 = torch.unsqueeze(sc19, 0)
+        flat = sc19.view(sc19.size(0), -1)
+        raw = self.predfc(flat)
+        # reshape to (batch, num_points, 3)
+        output = raw.view(sc19.size(0), self.num_points, 3)
 
         # layers = []
         # layers.append(self.inputconv16)
@@ -125,26 +152,27 @@ if __name__ == "__main__":
     num_batches = len(loader)
     optimizer = optim.Adam(pcgen.parameters(), lr=0.001)
     chamfer_loss = ChamferLoss()
-
-    for b in range(num_batches):
-        img, points = dataset[b]
-        points = torch.from_numpy(points)
+    batch_n = 1
+    for img_batch, points_batch in loader:
+        # img, points = dataset[b]
 
         # pcd = o3d.geometry.PointCloud()
         # pcd.points = o3d.utility.Vector3dVector(transformed_points)
         # img.save("test.png")
         # o3d.visualization.draw_geometries([pcd])
         optimizer.zero_grad()
-        img = torch.tensor(np.array(img) / 255.0, dtype=torch.float32).permute(2, 0, 1)
-        output = pcgen(img)
-        loss = chamfer_loss(output, points)
+        output = pcgen(img_batch)
+        loss = chamfer_loss(output, points_batch)  + 0.1 * repulsion_loss(points_batch)
         loss.backward()
         optimizer.step()
-        print(f"finished iteration {b} of {num_batches}")
+        print(f"finished iteration {batch_n} of {num_batches}")
+        batch_n += 1
+        if (batch_n == 50):
+            break
 
     print("done training!")
     # pcgen = PCGen()
-    # pcgen.load_state_dict(torch.load('model.pth', weights_only=True))
+    # pcgen.load_state_dict(torch.load('model_batched_properly_reg_loss.pth', weights_only=True))
 
     pcgen.eval()
     with torch.no_grad():
@@ -153,8 +181,9 @@ if __name__ == "__main__":
         tensor_input = tensor_input(input)
         out_pc = pcgen(tensor_input)
         pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(out_pc.detach().numpy())
+        pc_np = np.squeeze(out_pc.numpy(), axis=0)
+        pcd.points = o3d.utility.Vector3dVector(pc_np)
         o3d.visualization.draw_geometries([pcd])
 
-    PATH = "model.pth"
+    PATH = "model_batched_properly_reg_loss.pth"
     torch.save(pcgen.state_dict(), PATH)
