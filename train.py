@@ -11,6 +11,7 @@ import cv2
 
 from batch_creator import PointCloudImageDataset
 from distance import ChamferLoss, repulsion_loss
+from distance_np import forward
 
 BATCH_SIZE = 32
 class PCGen(nn.Module):
@@ -158,18 +159,6 @@ class PCGen(nn.Module):
         deconv_out = deconv_out[:, :768, :]
         output = raw.view(sc19.size(0), 256, 3)
         output = torch.cat([output, deconv_out], dim=1)
-        # layers = []
-        # layers.append(self.inputconv16)
-        # layers.append(nn.ReLU())
-        # layers.append(self.conv16)
-        # layers.append(nn.ReLU())
-        # layers.append(self.stridedconv32)
-        # layers.append(nn.ReLU())
-        # layers.append(self.conv32)
-        # layers.append(nn.ReLU())
-        # layers.append(self.conv32)
-        # layers.append(nn.ReLU())
-
         print("model gen success!")
         return output
 
@@ -186,7 +175,9 @@ if __name__ == "__main__":
     print(params[0].size())
 
     # try input
-    pil_image = Image.open("img_data/anise/anise_001_000.png")
+    pil_image = Image.open("img_data/chair/chair_020_020.png")
+    point_cloud = o3d.io.read_point_cloud("pc_data/chair/chair_020/pcd_1024.ply")
+    gt_points = np.asarray(point_cloud.points)
     pil_image = pil_image.convert('RGB')
     transform = transforms.ToTensor()
     image_tensor = transform(pil_image)
@@ -219,26 +210,29 @@ if __name__ == "__main__":
         print(f"finished iteration {batch_n} of {num_batches}")
         batch_n += 1
 
-        # x = torch.tensor(output, dtype=torch.float32) if not isinstance(output, torch.Tensor) else output
-        # x = x - x.mean(0)
-        # U, S, V = torch.pca_lowrank(x)   # requires PyTorch >=1.8
-        # print("singular values:", S.cpu().numpy())
-
-    PATH = "model_with_skip_connections_full1653.pth"
-    torch.save(pcgen.state_dict(), PATH)
+    # PATH = "test.pth"
+    # torch.save(pcgen.state_dict(), PATH)
 
     print("done training!")
     pcgen = PCGen()
-    pcgen.load_state_dict(torch.load('model_with_skip_connections_full1653.pth', weights_only=True))
+    pcgen.load_state_dict(torch.load('model_with_skip_connections.pth', weights_only=True))
 
-    pcgen.eval()
     with torch.no_grad():
         input = Image.open("test.png").convert('RGB')
         tensor_input = transforms.ToTensor()
         tensor_input = tensor_input(input)
         out_pc = pcgen(tensor_input)
+        vis = o3d.visualization.Visualizer()
+        vis.create_window(window_name='PC')
         pcd = o3d.geometry.PointCloud()
         pc_np = np.squeeze(out_pc.numpy(), axis=0)
+        print(f"loss: {forward(gt_points, pc_np)}")
         pcd.points = o3d.utility.Vector3dVector(pc_np)
-        o3d.visualization.draw_geometries([pcd])
+        pcd.paint_uniform_color([0, 0, 1])
+        vis.add_geometry(pcd)
 
+        pcd2 = o3d.geometry.PointCloud()
+        pcd2.points = o3d.utility.Vector3dVector(gt_points)
+        vis.add_geometry(pcd2)
+        vis.get_render_option().point_size=10
+        vis.run()
